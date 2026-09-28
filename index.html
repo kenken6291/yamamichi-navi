@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1F3B2C">
+<meta name="description" content="ハイキングのルート記録・GPX入出力・沿道スポット検索ができる地図アプリ">
+<title>やまみちナビ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M3 25c5-1 7-6 11-11s8-8 15-8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+      <path d="M5 29c6-1 9-5 13-9s7-6 11-6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity=".55"/>
+      <circle cx="29" cy="6" r="2.4" fill="currentColor"/>
+    </svg>
+    <span>やまみちナビ</span>
+  </div>
+  <span id="rec-badge" class="rec-badge" hidden>記録中</span>
+  <button id="account-btn" class="account-btn" type="button">ログイン</button>
+</header>
+
+<main id="map" aria-label="地図"></main>
+
+<button id="locate-btn" class="fab" type="button" aria-label="現在地を表示">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4" stroke="currentColor" stroke-width="2"/></svg>
+</button>
+
+<section id="sheet" class="sheet" data-level="half" aria-label="操作パネル">
+  <button id="sheet-handle" class="sheet-handle" type="button" aria-label="パネルの大きさを切り替え"><span></span></button>
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" type="button" data-tab="routes" aria-selected="true">ルート</button>
+    <button class="tab" role="tab" type="button" data-tab="record" aria-selected="false">記録</button>
+    <button class="tab" role="tab" type="button" data-tab="create" aria-selected="false">作る</button>
+    <button class="tab" role="tab" type="button" data-tab="spots" aria-selected="false">スポット</button>
+  </nav>
+
+  <div class="panels">
+
+    <!-- ルート検索・詳細 -->
+    <section class="panel" id="panel-routes" role="tabpanel">
+      <div id="route-browse">
+        <form id="route-filter" class="filter">
+          <div class="row">
+            <input type="search" name="keyword" placeholder="山名・地名・キーワード" aria-label="キーワード">
+            <button class="btn primary" type="submit">探す</button>
+          </div>
+          <details class="more">
+            <summary>条件を細かく指定</summary>
+            <div class="grid2">
+              <label>登りの合計
+                <select name="maxGain">
+                  <option value="">指定なし</option>
+                  <option value="100">100m以下</option>
+                  <option value="300">300m以下</option>
+                  <option value="600">600m以下</option>
+                  <option value="1000">1000m以下</option>
+                </select>
+              </label>
+              <label>距離
+                <select name="maxDist">
+                  <option value="">指定なし</option>
+                  <option value="5">5km以下</option>
+                  <option value="10">10km以下</option>
+                  <option value="15">15km以下</option>
+                  <option value="25">25km以下</option>
+                </select>
+              </label>
+              <label class="span2">並び順
+                <select name="sort">
+                  <option value="flat" selected>平坦な順（1kmあたりの登りが少ない）</option>
+                  <option value="gain">登りの合計が少ない順</option>
+                  <option value="new">新しい順</option>
+                  <option value="popular">いいねが多い順</option>
+                </select>
+              </label>
+            </div>
+            <fieldset class="chips">
+              <legend>道の条件</legend>
+              <label class="chip"><input type="checkbox" name="pedestrian">歩行者向けのみ</label>
+              <label class="chip"><input type="checkbox" name="tag" value="車少なめ">車少なめ</label>
+              <label class="chip"><input type="checkbox" name="tag" value="狭い道">狭い道</label>
+              <label class="chip"><input type="checkbox" name="tag" value="歩道・遊歩道中心">歩道・遊歩道中心</label>
+              <label class="chip"><input type="checkbox" name="tag" value="平坦">平坦</label>
+            </fieldset>
+            <label class="check"><input type="checkbox" name="mine">自分のルートだけ表示</label>
+          </details>
+        </form>
+        <p id="route-count" class="muted"></p>
+        <ul id="route-list" class="route-list"></ul>
+      </div>
+      <div id="route-detail" class="route-detail" hidden></div>
+    </section>
+
+    <!-- 記録 -->
+    <section class="panel" id="panel-record" role="tabpanel" hidden>
+      <div id="rec-recover" class="notice" hidden>
+        <p>前回の記録が保存されずに残っています。</p>
+        <div class="row wrap">
+          <button class="btn primary" type="button" id="rec-recover-go">続きから記録</button>
+          <button class="btn" type="button" id="rec-recover-draft">ルートとして開く</button>
+          <button class="btn ghost danger" type="button" id="rec-recover-discard">破棄</button>
+        </div>
+      </div>
+      <div class="rec-stats">
+        <div class="stat stat-time"><span class="num" id="rec-time">0:00:00</span><span class="lbl">歩いた時間</span></div>
+        <div class="stat"><span class="num" id="rec-dist">0.00</span><span class="lbl">距離 km</span></div>
+        <div class="stat"><span class="num" id="rec-gain">0</span><span class="lbl">登り m</span></div>
+        <div class="stat"><span class="num" id="rec-ele">--</span><span class="lbl">標高 m</span></div>
+      </div>
+      <p class="muted" id="rec-acc">記録を始めるとGPSで現在地を取得します</p>
+      <div class="rec-actions">
+        <button class="btn primary big" type="button" id="rec-start">記録を始める</button>
+        <button class="btn big" type="button" id="rec-pause" hidden>一時停止</button>
+        <button class="btn primary big" type="button" id="rec-resume" hidden>再開する</button>
+        <button class="btn big danger-solid" type="button" id="rec-stop" hidden>記録を終える</button>
+      </div>
+      <div id="rec-profile" class="profile-wrap"></div>
+      <p class="hint">画面を消したり別のアプリに切り替えたりすると、端末によっては記録が止まります。記録中は画面が点いたままになるよう設定しています。</p>
+    </section>
+
+    <!-- 作る（下書き・GPX・写真・経路探索・取り込み） -->
+    <section class="panel" id="panel-create" role="tabpanel" hidden>
+      <div id="draft" class="draft" hidden></div>
+
+      <details class="block" open>
+        <summary>GPXファイルを読み込む</summary>
+        <label class="file-drop">
+          <span>GPXファイルを選ぶ</span>
+          <input type="file" id="gpx-file" accept=".gpx,application/gpx+xml,application/xml,text/xml">
+        </label>
+      </details>
+
+      <details class="block">
+        <summary>写真から経路を作る</summary>
+        <p class="hint">写真に記録された位置と撮影日時を読み取り、撮影した順に線でつなぎます。</p>
+        <label class="file-drop">
+          <span>写真を選ぶ（複数可）</span>
+          <input type="file" id="photo-files" accept="image/*" multiple>
+        </label>
+        <p id="photo-picked" class="muted"></p>
+        <label class="check"><input type="checkbox" id="photo-snap">道に沿って線を引く（経路探索を使用）</label>
+        <label class="check"><input type="checkbox" id="photo-ai">位置情報のない写真はAIで撮影地を推定する</label>
+        <button class="btn primary" type="button" id="photo-run">経路を作る</button>
+        <p class="hint">iPhoneで写真を選ぶと位置情報が消える場合があります。その場合は「写真」アプリの共有メニューで「オプション」から位置情報を含めるか、「ファイル」アプリから選んでください。</p>
+      </details>
+
+      <details class="block">
+        <summary>地図で経路を探す</summary>
+        <div class="grid2">
+          <label class="span2">優先すること
+            <select id="plan-pref">
+              <option value="flat">高低差が少ない経路</option>
+              <option value="recommended">歩きやすい道</option>
+              <option value="shortest">いちばん短い経路</option>
+            </select>
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" id="plan-steps">階段を避ける</label>
+        <div class="row wrap">
+          <button class="btn" type="button" id="plan-pick">地図をタップして地点を追加</button>
+          <button class="btn primary" type="button" id="plan-run">経路を探す</button>
+          <button class="btn ghost" type="button" id="plan-clear">やり直す</button>
+        </div>
+        <ol id="plan-points" class="plan-points"></ol>
+        <div id="plan-candidates"></div>
+      </details>
+
+      <details class="block">
+        <summary>記事やWebページから取り込む</summary>
+        <p class="hint">ハイキング記事やブログのURL、または本文の貼り付けから、コースの概要・高低差・立ち寄りスポット・名物をAIが読み取ります。</p>
+        <label>ページのURL<input type="url" id="import-url" placeholder="https://"></label>
+        <label>または本文を貼り付け<textarea id="import-text" rows="4"></textarea></label>
+        <button class="btn primary" type="button" id="import-run">読み取る</button>
+        <div id="import-result"></div>
+      </details>
+    </section>
+
+    <!-- スポット -->
+    <section class="panel" id="panel-spots" role="tabpanel" hidden>
+      <fieldset class="chips" id="spot-cats"><legend>種類で絞り込む</legend></fieldset>
+      <div class="row wrap">
+        <label class="inline">ルートからの距離
+          <select id="spot-radius">
+            <option value="500">500m以内</option>
+            <option value="1000" selected>1km以内</option>
+            <option value="2000">2km以内</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="spot-osm" checked>OpenStreetMapの施設も探す</label>
+      </div>
+      <p id="spot-target" class="muted"></p>
+      <div class="row wrap">
+        <button class="btn primary" type="button" id="spot-along">ルート沿いを探す</button>
+        <button class="btn" type="button" id="spot-view">表示中の地図の範囲を探す</button>
+      </div>
+      <div class="row wrap">
+        <button class="btn ghost" type="button" id="spot-add-tap">地図をタップして登録</button>
+        <button class="btn ghost" type="button" id="spot-add-here">現在地を登録</button>
+      </div>
+      <ul id="spot-list" class="spot-list"></ul>
+    </section>
+
+  </div>
+</section>
+
+<!-- 会員認証 -->
+<div id="auth" class="modal" hidden role="dialog" aria-modal="true" aria-label="会員">
+  <div class="modal-box">
+    <button id="auth-close" class="close" type="button" aria-label="閉じる">×</button>
+
+    <form data-view="login" id="login-form">
+      <h2>ログイン</h2>
+      <label>メールアドレス<input type="email" name="email" autocomplete="email" required></label>
+      <label>パスワード
+        <span class="pw-field"><input type="password" name="password" autocomplete="current-password" required><button type="button" class="pw-toggle" aria-pressed="false" aria-label="パスワードを表示">表示</button></span>
+      </label>
+      <button class="btn primary block-btn" type="submit">ログイン</button>
+      <p class="links"><button type="button" class="link" data-go="register">会員登録はこちら</button><button type="button" class="link" data-go="reset">パスワードを忘れた場合</button></p>
+    </form>
+
+    <form data-view="register" id="register-form" hidden>
+      <h2>会員登録</h2>
+      <p class="muted">入力したメールアドレスに仮パスワードを送ります。</p>
+      <label>ニックネーム<input name="nickname" maxlength="20" required></label>
+      <label>メールアドレス<input type="email" name="email" autocomplete="email" required></label>
+      <button class="btn primary block-btn" type="submit">仮パスワードを受け取る</button>
+      <p class="links"><button type="button" class="link" data-go="login">ログインに戻る</button></p>
+    </form>
+
+    <form data-view="reset" id="reset-form" hidden>
+      <h2>パスワード再発行</h2>
+      <p class="muted">登録したメールアドレスに新しい仮パスワードを送ります。</p>
+      <label>メールアドレス<input type="email" name="email" autocomplete="email" required></label>
+      <button class="btn primary block-btn" type="submit">仮パスワードを再発行する</button>
+      <p class="links"><button type="button" class="link" data-go="login">ログインに戻る</button></p>
+    </form>
+
+    <form data-view="change" id="change-form" hidden>
+      <h2>パスワードの変更</h2>
+      <p class="muted" id="change-note">英字と数字を含む8文字以上にしてください。</p>
+      <label>現在のパスワード（仮パスワード）
+        <span class="pw-field"><input type="password" name="current" autocomplete="current-password" required><button type="button" class="pw-toggle" aria-pressed="false" aria-label="パスワードを表示">表示</button></span>
+      </label>
+      <label>新しいパスワード
+        <span class="pw-field"><input type="password" name="newPassword" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" aria-pressed="false" aria-label="パスワードを表示">表示</button></span>
+      </label>
+      <label>新しいパスワード（確認）
+        <span class="pw-field"><input type="password" name="confirm" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" aria-pressed="false" aria-label="パスワードを表示">表示</button></span>
+      </label>
+      <button class="btn primary block-btn" type="submit">パスワードを変更する</button>
+      <p class="links" id="change-logout-wrap"><button type="button" class="link" data-go="logout">ログアウト</button></p>
+    </form>
+
+    <div data-view="account" hidden>
+      <h2>アカウント</h2>
+      <p id="acct-info"></p>
+      <div class="row wrap">
+        <button class="btn" type="button" data-go="change">パスワードを変更</button>
+        <button class="btn ghost danger" type="button" data-go="logout">ログアウト</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ルート保存 -->
+<div id="save-modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="save-title">
+  <form id="save-form" class="modal-box">
+    <h2 id="save-title">ルートを保存</h2>
+    <label>タイトル<input name="title" maxlength="60" required></label>
+    <label>説明<textarea name="description" rows="4" maxlength="2000"></textarea></label>
+    <fieldset class="vis-choice">
+      <legend>公開範囲</legend>
+      <label><input type="radio" name="visibility" value="private" checked><span><b>非公開</b>自分だけが見られます</span></label>
+      <label><input type="radio" name="visibility" value="members"><span><b>会員限定</b>ログインした会員が見られます</span></label>
+      <label><input type="radio" name="visibility" value="public"><span><b>公開</b>誰でも見られます</span></label>
+    </fieldset>
+    <fieldset class="chips" id="save-tags"><legend>道の特徴</legend></fieldset>
+    <label class="check" id="save-photos-wrap" hidden><input type="checkbox" name="uploadPhotos" checked>経路に使った写真もアップロードする</label>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-close>やめる</button>
+      <button type="submit" class="btn primary">保存する</button>
+    </div>
+  </form>
+</div>
+
+<!-- スポット登録・編集 -->
+<div id="spot-modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="spot-modal-title">
+  <form id="spot-form" class="modal-box">
+    <h2 id="spot-modal-title">スポットを登録</h2>
+    <p class="muted" id="spot-pos"></p>
+    <label>名前<input name="name" maxlength="60" required></label>
+    <label>種類<select name="category" id="spot-category"></select></label>
+    <label>説明<textarea name="description" rows="3" maxlength="1000"></textarea></label>
+    <label>名物・お土産<input name="specialty" maxlength="200" placeholder="例：くるみ餅、地ビール"></label>
+    <label>参考URL<input name="url" type="url" placeholder="https://"></label>
+    <fieldset class="vis-choice">
+      <legend>公開範囲</legend>
+      <label><input type="radio" name="visibility" value="private" checked><span><b>非公開</b>自分だけが見られます</span></label>
+      <label><input type="radio" name="visibility" value="members"><span><b>会員限定</b>ログインした会員が見られます</span></label>
+      <label><input type="radio" name="visibility" value="public"><span><b>公開</b>誰でも見られます</span></label>
+    </fieldset>
+    <label>写真・動画を追加<input type="file" name="files" accept="image/*,video/*" multiple></label>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost danger" id="spot-delete" hidden>削除する</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn ghost" data-close>やめる</button>
+      <button type="submit" class="btn primary">保存する</button>
+    </div>
+  </form>
+</div>
+
+<div id="lightbox" class="lightbox" hidden role="dialog" aria-modal="true" aria-label="写真・動画">
+  <button class="close" type="button" aria-label="閉じる" data-close>×</button>
+  <div id="lightbox-body"></div>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<div id="busy" class="busy" hidden><div class="busy-box"><span class="spinner" aria-hidden="true"></span><span id="busy-text">処理しています</span></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
