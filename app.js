@@ -1,11 +1,12 @@
 'use strict';
 /* =========================================================
  * やまみちナビ — フロントエンド (Vanilla JS)
- * GitHub Pages: 下の GAS_URL にウェブアプリのURLを設定
+ * GitHub Pages: config.js の GAS_URL にウェブアプリのURLを設定
  * GAS単体ホスト: google.script.run を自動で使うため設定不要
  * ========================================================= */
+const APP_VERSION = '1.1.0';
 const CONFIG = {
-  GAS_URL: 'https://script.google.com/macros/s/AKfycbz6kEa1yq5mWUIp6LLH3o7dCh-YKXFNfxddb6ySORFAOMKvQh3Qrl8B2q4FWjkxs5Ez/exec',
+  GAS_URL: (window.APP_CONFIG && window.APP_CONFIG.GAS_URL) || '',
   CENTER: [35.625, 139.243],   // 初期表示（高尾山周辺）
   ZOOM: 12,
   MAX_POINTS: 4000,            // 保存時の最大地点数（超えたら間引く）
@@ -123,7 +124,7 @@ async function api(action, data = {}) {
       .withFailureHandler(ng)
       .apiRun(JSON.stringify(payload)));
   } else {
-    if (CONFIG.GAS_URL.includes('ここに')) throw new Error('app.js の GAS_URL にウェブアプリのURLを設定してください');
+    if (!CONFIG.GAS_URL || CONFIG.GAS_URL.includes('ここに')) throw new Error('config.js の GAS_URL にウェブアプリのURLを設定してください');
     const r = await fetch(CONFIG.GAS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -388,7 +389,7 @@ const layers = {
   me: L.layerGroup().addTo(map),
 };
 
-const sheetHeight = () => (window.innerWidth >= 900 ? 0 : $('#sheet').getBoundingClientRect().height);
+const sheetHeight = () => (window.innerWidth >= 900 || $('#sheet').dataset.level === 'hidden' ? 0 : $('#sheet').getBoundingClientRect().height);
 function fitTo(latlngs) {
   if (!latlngs.length) return;
   const leftPad = window.innerWidth >= 900 ? 420 : 20;
@@ -440,7 +441,19 @@ $('#locate-btn').addEventListener('click', () => guard(async () => {
  * ボトムシート・タブ
  * ========================================================= */
 const sheet = $('#sheet');
-function setSheet(level) { sheet.dataset.level = level; }
+let sheetPrevLevel = 'half';
+function setSheet(level) {
+  if (level !== 'hidden' && sheet.dataset.level !== 'hidden') sheetPrevLevel = level;
+  sheet.dataset.level = level;
+  $('#sheet-show').hidden = level !== 'hidden';
+}
+function hideSheet() {
+  if (sheet.dataset.level !== 'hidden') sheetPrevLevel = sheet.dataset.level;
+  setSheet('hidden');
+}
+function restoreSheet() { setSheet(sheetPrevLevel === 'hidden' ? 'half' : sheetPrevLevel); }
+$('#sheet-hide').addEventListener('click', hideSheet);
+$('#sheet-show').addEventListener('click', restoreSheet);
 let dragY = null, suppressClick = false;
 $('#sheet-handle').addEventListener('pointerdown', (e) => { dragY = e.clientY; });
 window.addEventListener('pointerup', (e) => {
@@ -449,21 +462,26 @@ window.addEventListener('pointerup', (e) => {
   dragY = null;
   if (Math.abs(dy) < 20) return;
   suppressClick = true;
-  const order = ['min', 'half', 'full'];
+  const order = ['hidden', 'min', 'half', 'full'];
   let i = order.indexOf(sheet.dataset.level);
-  i = dy < 0 ? Math.min(2, i + 1) : Math.max(0, i - 1);
-  setSheet(order[i]);
+  i = dy < 0 ? Math.min(3, i + 1) : Math.max(0, i - 1);
+  if (order[i] === 'hidden') hideSheet(); else setSheet(order[i]);
 });
 $('#sheet-handle').addEventListener('click', () => {
   if (suppressClick) { suppressClick = false; return; }
   const l = sheet.dataset.level;
   setSheet(l === 'min' ? 'half' : l === 'half' ? 'full' : 'min');
 });
+// PC幅に広がったら隠した状態を解除
+window.addEventListener('resize', () => {
+  if (window.innerWidth >= 900 && sheet.dataset.level === 'hidden') restoreSheet();
+});
+$('#app-version').textContent = 'v' + APP_VERSION;
 $$('.tab').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
 function showTab(name) {
   $$('.tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
   $$('.panel').forEach((p) => { p.hidden = p.id !== 'panel-' + name; });
-  if (sheet.dataset.level === 'min') setSheet('half');
+  if (sheet.dataset.level === 'min' || sheet.dataset.level === 'hidden') setSheet('half');
   $('.panels').scrollTop = 0;
 }
 
