@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-<link rel="stylesheet" href="style.css?v=1.1.0">
+<link rel="stylesheet" href="style.css?v=1.2.0">
 </head>
 <body>
 
@@ -185,6 +185,16 @@
         <button class="btn primary" type="button" id="import-run">読み取る</button>
         <div id="import-result"></div>
       </details>
+
+      <details class="block" id="model-block">
+        <summary>AIモデルの選択</summary>
+        <p class="hint">「写真の撮影地推定」と「記事やWebページから取り込む」で使うGeminiのモデルを選べます。</p>
+        <label>使うAIモデル
+          <select id="model-select"></select>
+        </label>
+        <p class="hint">選んだモデルが使えない時は、汎用の最新モデルに自動で切り替わります。</p>
+        <p class="muted" id="model-status"></p>
+      </details>
     </section>
 
     <!-- スポット -->
@@ -331,7 +341,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
-<script src="config.js?v=1.1.0"></script>
-<script src="app.js?v=1.1.0"></script>
+<script src="config.js?v=1.2.0"></script>
+<script src="app.js?v=1.2.0"></script>
 </body>
 </html>

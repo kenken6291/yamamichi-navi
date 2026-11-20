@@ -4,7 +4,7 @@
  * GitHub Pages: config.js の GAS_URL にウェブアプリのURLを設定
  * GAS単体ホスト: google.script.run を自動で使うため設定不要
  * ========================================================= */
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const CONFIG = {
   GAS_URL: (window.APP_CONFIG && window.APP_CONFIG.GAS_URL) || '',
   CENTER: [35.625, 139.243],   // 初期表示（高尾山周辺）
@@ -13,6 +13,14 @@ const CONFIG = {
   REC_MIN_MOVE_M: 5,           // 記録: この距離未満の移動は無視
   REC_MAX_ACCURACY_M: 40,      // 記録: 精度がこれより悪い測位は無視
 };
+
+/* ---------- Gemini モデル（config.js で管理） ---------- */
+const MODEL_KEY = 'ymn_gemini_model';
+const DEFAULT_MODEL_LABEL = '自動モード（汎用の最新）';
+const GEMINI_MODEL_OPTIONS = (window.APP_CONFIG && Array.isArray(window.APP_CONFIG.GEMINI_MODEL_OPTIONS) && window.APP_CONFIG.GEMINI_MODEL_OPTIONS.length)
+  ? window.APP_CONFIG.GEMINI_MODEL_OPTIONS
+  : [{ value: '', label: DEFAULT_MODEL_LABEL }];
+const DEFAULT_GEMINI_MODEL = (window.APP_CONFIG && window.APP_CONFIG.GEMINI_MODEL) || '';
 
 const ROUTE_COLOR = '#C2185B';
 const REC_COLOR = '#1565C0';
@@ -40,6 +48,8 @@ const state = {
   token: store.get('ymn_token'),
   user: store.get('ymn_user'),
   config: { geminiEnabled: false, orsEnabled: false },
+  model: DEFAULT_GEMINI_MODEL,   // 画面で選んだGeminiモデル（'' = 自動）
+  lastAi: null,                  // 直近のAI呼び出しで実際に使ったモデル
   current: null,        // 表示中の保存済みルート（getRoute の結果）
   draft: null,          // 未保存のルート
   active: null,         // スポット検索・分析の対象 { points, title }
@@ -1355,7 +1365,8 @@ $('#photo-run').addEventListener('click', () => guard(async () => {
         const b64 = await imageToJpegBase64(missing[i].file, 1024, 0.8);
         if (!b64) continue;
         try {
-          const r = await api('estimatePhotoLocation', { image: b64, mimeType: 'image/jpeg', hint });
+          const r = await api('estimatePhotoLocation', { image: b64, mimeType: 'image/jpeg', hint, model: state.model });
+          noteAiModel(r.ai);
           if (r.lat != null && r.confidence >= 0.4) {
             Object.assign(missing[i], { lat: r.lat, lng: r.lng, estimated: true, placeName: r.placeName });
             estimated++;
@@ -1484,7 +1495,8 @@ $('#import-run').addEventListener('click', () => guard(async () => {
   if (!url && !text) throw new Error('URLを入力するか、本文を貼り付けてください');
   if (!state.config.geminiEnabled) throw new Error('AI機能が設定されていません（GEMINI_API_KEY）');
   if (!requireLogin()) return;
-  const d = await api('extractFromUrl', { url, text });
+  const d = await api('extractFromUrl', { url, text, model: state.model });
+  noteAiModel(d.ai, true);
   d.spots.forEach((s) => { s.checked = true; s.geo = null; s.geoTried = false; });
   state.importResult = d;
   layers.imp.clearLayers();
@@ -1794,12 +1806,64 @@ function buildStaticUI() {
   setActive(null);
 }
 
+/* =========================================================
+ * Gemini モデル選択
+ * ========================================================= */
+function modelLabel(value) {
+  const o = GEMINI_MODEL_OPTIONS.find((x) => x.value === value);
+  return o ? o.label : (value || DEFAULT_MODEL_LABEL);
+}
+
+function setupModelPicker() {
+  const saved = store.get(MODEL_KEY);
+  if (typeof saved === 'string' && GEMINI_MODEL_OPTIONS.some((o) => o.value === saved)) state.model = saved;
+  const sel = $('#model-select');
+  if (!sel) return;
+  sel.innerHTML = GEMINI_MODEL_OPTIONS.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('');
+  sel.value = state.model;
+  if (sel.value !== state.model) { state.model = ''; sel.value = ''; }
+  sel.addEventListener('change', () => {
+    state.model = sel.value;
+    store.set(MODEL_KEY, state.model);
+    state.lastAi = null;
+    renderModelStatus();
+    toast('AIモデルを「' + modelLabel(state.model) + '」にしました');
+  });
+  renderModelStatus();
+}
+
+function renderModelStatus() {
+  const el = $('#model-status');
+  if (!el) return;
+  const lines = [];
+  if (!state.config.geminiEnabled) lines.push('AI機能は未設定です（GEMINI_API_KEY）');
+  if (!state.model && state.config.defaultModel) lines.push('自動モードで使うモデル: ' + state.config.defaultModel);
+  if (state.lastAi && state.lastAi.model) {
+    lines.push(state.lastAi.fallback
+      ? `前回使ったモデル: ${state.lastAi.model}（${state.lastAi.requestedModel} が使えなかったため自動で切替）`
+      : '前回使ったモデル: ' + state.lastAi.model);
+  }
+  if (state.config.gasVersion) lines.push('GAS v' + state.config.gasVersion);
+  el.textContent = lines.join(' ／ ');
+}
+
+/** AI呼び出しで実際に使ったモデルを記録し、切替が起きた時はお知らせ */
+function noteAiModel(ai, announce = false) {
+  if (!ai || !ai.model) return;
+  const changed = !state.lastAi || state.lastAi.model !== ai.model;
+  state.lastAi = ai;
+  renderModelStatus();
+  if (ai.fallback && (announce || changed)) toast(`${ai.requestedModel} が使えなかったため ${ai.model} で処理しました`, 5000);
+}
+
 async function init() {
   buildStaticUI();
+  setupModelPicker();
   updateAccountButton();
   updateRecUI();
   checkRecovery();
   try { state.config = await api('getConfig'); } catch (e) { toast(e.message, 6000); }
+  renderModelStatus();
   if (state.token) {
     try {
       const d = await api('me');

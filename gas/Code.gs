@@ -13,12 +13,27 @@
  *  DRIVE_FOLDER_ID  setup() が自動設定
  *  PEPPER           setup() が自動設定（変更するとすべてのパスワードが無効になります）
  *  GEMINI_API_KEY   Google AI Studio で取得したAPIキー
- *  GEMINI_MODEL     使用するモデルID（未設定時 gemini-2.5-flash）
+ *  GEMINI_MODEL     既定のモデルID（任意。例 gemini-3.8-flash。未設定時は汎用の最新モデル）
+ *
+ * Geminiモデルの決定順:
+ *  1. 画面の「AIモデル」で選ばれたモデル（config.js の GEMINI_MODEL_OPTIONS）
+ *  2. スクリプトプロパティ GEMINI_MODEL
+ *  3. 汎用の最新モデル FALLBACK_GEMINI_MODELS を先頭から順に試す
+ *  指定モデルが廃止・未公開・名前違いの時は、汎用の最新モデルへ自動で切り替える
  *  ORS_API_KEY      openrouteservice のAPIキー（経路探索・写真の道路沿い補間で使用。任意）
  *  APP_URL          公開URL（メール本文に記載。例 https://kenken6291.github.io/yamamichi-navi/）
  */
 
 const APP_NAME = 'やまみちナビ';
+const GAS_VERSION = '1.2.0';             // GASバックエンドのバージョン（デプロイ時に更新）
+// 指定なし・該当なしの時に使う汎用最新モデル（先頭から順に試す）
+//   gemini-flash-latest : Googleが常に最新の汎用モデルへ自動で差し替えるエイリアス
+//   gemini-4-hydrogen   : 2026年11月時点の汎用最新モデル（「日々の暮らしをサポート」）
+//   gemini-3.8-flash    : 最終的な保険
+const FALLBACK_GEMINI_MODELS = ['gemini-flash-latest', 'gemini-4-hydrogen', 'gemini-3.8-flash'];
+const GEMINI_MODEL_PATTERN = /^gemini-[a-z0-9][a-z0-9.\-]{0,60}$/;
+const GEMINI_RETRY_CODES = [429, 500, 503];
+const GEMINI_MAX_ATTEMPTS = 3;
 const SESSION_TTL = 21600;               // セッション有効期間（秒）。CacheService の上限は6時間
 const HASH_ROUNDS = 1000;                // パスワードハッシュのストレッチ回数
 const MAX_POINTS = 5000;                 // 1ルートあたりの最大地点数
@@ -178,6 +193,9 @@ function getConfig_() {
   return {
     appName: APP_NAME,
     geminiEnabled: !!P_('GEMINI_API_KEY'),
+    gasVersion: GAS_VERSION,
+    defaultModel: resolveGeminiModel_(''),
+    fallbackModels: FALLBACK_GEMINI_MODELS,
     orsEnabled: !!P_('ORS_API_KEY'),
     categories: CATEGORIES
   };
@@ -869,32 +887,84 @@ function commentOut_(c, u, users) {
 /* =========================================================
  * Gemini 連携
  * ========================================================= */
-function callGemini_(parts) {
-  const key = P_('GEMINI_API_KEY');
-  if (!key) throw new Error('GEMINI_API_KEY が設定されていないため、AI機能は使えません');
-  const model = P_('GEMINI_MODEL', 'gemini-2.5-flash');
-  const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
+/** 使うモデルIDを決める（画面の選択 → スクリプトプロパティ → 汎用の最新） */
+function resolveGeminiModel_(requested) {
+  const req = String(requested || '').trim().toLowerCase();
+  if (req && GEMINI_MODEL_PATTERN.test(req)) return req;
+  const prop = String(P_('GEMINI_MODEL', '') || '').trim().toLowerCase();
+  if (prop && GEMINI_MODEL_PATTERN.test(prop)) return prop;
+  return FALLBACK_GEMINI_MODELS[0];
+}
+
+/** 1モデルに対して呼び出す。混雑(429/500/503)時は待ち時間を伸ばしながら再試行 */
+function callGeminiModel_(model, key, body) {
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
+  const opt = {
     method: 'post',
     contentType: 'application/json',
     headers: { 'x-goog-api-key': key },
     muteHttpExceptions: true,
-    payload: JSON.stringify({
-      contents: [{ role: 'user', parts: parts }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
-    })
-  });
-  const code = res.getResponseCode();
-  if (code !== 200) throw new Error('AIの呼び出しに失敗しました（' + code + '）: ' + res.getContentText().slice(0, 200));
-  const j = JSON.parse(res.getContentText());
+    payload: JSON.stringify(body)
+  };
+  let code = 0, text = '';
+  for (let attempt = 1; attempt <= GEMINI_MAX_ATTEMPTS; attempt++) {
+    const res = UrlFetchApp.fetch(url, opt);
+    code = res.getResponseCode();
+    text = res.getContentText();
+    if (code === 200) break;
+    if (GEMINI_RETRY_CODES.indexOf(code) < 0 || attempt === GEMINI_MAX_ATTEMPTS) break;
+    Utilities.sleep(2000 * attempt);
+  }
+  return { code: code, text: text };
+}
+
+/** モデルが存在しない（廃止・未公開・名前違い）ことを示す応答か */
+function isModelNotFound_(code, text) {
+  if (code === 404) return true;
+  if (code === 400) return /not found|is not supported|NOT_FOUND|unknown model|invalid model/i.test(text);
+  return false;
+}
+
+/**
+ * Gemini呼び出し本体。戻り値 { data: 解析済みJSON, model: 実際に使ったモデル, requestedModel, fallback }
+ * requested が空なら既定モデル、該当なしなら FALLBACK_GEMINI_MODELS へ順に切り替える
+ */
+function callGemini_(parts, requested) {
+  const key = P_('GEMINI_API_KEY');
+  if (!key) throw new Error('GEMINI_API_KEY が設定されていないため、AI機能は使えません');
+  const model = resolveGeminiModel_(requested);
+  const body = {
+    contents: [{ role: 'user', parts: parts }],
+    generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
+  };
+  const candidates = [model].concat(FALLBACK_GEMINI_MODELS.filter(function (m) { return m !== model; }));
+  let used = model, res = null;
+  for (let i = 0; i < candidates.length; i++) {
+    used = candidates[i];
+    res = callGeminiModel_(used, key, body);
+    if (!isModelNotFound_(res.code, res.text)) break;
+    console.warn('Geminiモデル「' + used + '」に該当がないため次の候補に切り替えます');
+  }
+  if (res.code !== 200) {
+    throw new Error('AIの呼び出しに失敗しました（' + res.code + ' / ' + used + '）: ' + res.text.slice(0, 200));
+  }
+  const j = JSON.parse(res.text);
   const cand = (j.candidates || [])[0];
   const text = cand && cand.content && cand.content.parts
-    ? cand.content.parts.map(function (x) { return x.text || ''; }).join('') : '';
-  if (!text) throw new Error('AIから回答が得られませんでした');
+    ? cand.content.parts.map(function (x) { return x.thought ? '' : (x.text || ''); }).join('') : '';
+  if (!text) throw new Error('AIから回答が得られませんでした（' + used + '）');
+  let data;
   try {
-    return JSON.parse(text.replace(/```json|```/g, '').trim());
+    data = JSON.parse(text.replace(/```json|```/g, '').trim());
   } catch (err) {
     throw new Error('AIの回答を読み取れませんでした。もう一度お試しください');
   }
+  return { data: data, model: used, requestedModel: model, fallback: used !== model };
+}
+
+/** 呼び出し結果に付ける「使ったモデル」情報 */
+function modelInfo_(r) {
+  return { model: r.model, requestedModel: r.requestedModel, fallback: r.fallback };
 }
 
 /** 外部ページ(URL)または貼り付けテキストから、コース・スポット・名物を構造化抽出 */
@@ -919,7 +989,8 @@ function extractFromUrl_(p, u) {
     'addressHint には市町村名や山域など、地図検索の手がかりになる語を入れてください。\n\n' +
     '本文:\n"""\n' + body + '\n"""';
 
-  const out = callGemini_([{ text: prompt }]);
+  const ai = callGemini_([{ text: prompt }], p.model);
+  const out = ai.data || {};
   const course = out.course || {};
   const spots = (Array.isArray(out.spots) ? out.spots : []).slice(0, 40).map(function (s) {
     return {
@@ -931,7 +1002,7 @@ function extractFromUrl_(p, u) {
   const specialties = (Array.isArray(out.specialties) ? out.specialties : []).slice(0, 20).map(function (s) {
     return { name: cleanText_(s.name, 60), description: cleanText_(s.description, 200), where: cleanText_(s.where, 100) };
   }).filter(function (s) { return s.name; });
-  return { sourceUrl: url, course: course, spots: spots, specialties: specialties };
+  return { sourceUrl: url, course: course, spots: spots, specialties: specialties, ai: modelInfo_(ai) };
 }
 
 function fetchPageText_(url) {
@@ -979,12 +1050,14 @@ function estimatePhotoLocation_(p, u) {
     '次のJSONだけを返してください:\n' +
     '{"placeName": string, "lat": number|null, "lng": number|null, "confidence": number(0〜1), "reason": string(60字以内)}\n' +
     '確信が持てない場合は confidence を低くし、lat と lng は null にしてください。';
-  const out = callGemini_([{ text: prompt }, { inlineData: { mimeType: p.mimeType || 'image/jpeg', data: data } }]);
+  const ai = callGemini_([{ text: prompt }, { inlineData: { mimeType: p.mimeType || 'image/jpeg', data: data } }], p.model);
+  const out = ai.data || {};
   return {
     placeName: cleanText_(out.placeName, 100),
     lat: num_(out.lat), lng: num_(out.lng),
     confidence: Math.max(0, Math.min(1, Number(out.confidence) || 0)),
-    reason: cleanText_(out.reason, 200)
+    reason: cleanText_(out.reason, 200),
+    ai: modelInfo_(ai)
   };
 }
 
